@@ -1,0 +1,6 @@
+.bundle/
+vendor/
+*.log
+.env
+watch_response.json
+dmc_session_response.json
