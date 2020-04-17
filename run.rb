@@ -23,7 +23,7 @@ module Niconico
     if watch_response["video"]["dmcInfo"] == nil then
       return VideoInfo.new( watch_response["video"]["id"].slice(/\d+/).to_i,
                             watch_response["video"]["smileInfo"]["url"],
-                            "smile")
+                            "smile", watch_response["video"]["title"])
     # new server
     else
       return DmcInfo.new(watch_response).receive
@@ -34,20 +34,20 @@ module Niconico
   class VideoInfo
     attr_reader :id, :name
 
-    def initialize(id, url, type, dmc_info: nil)
+    def initialize(id, url, type, name, dmc_info: nil)
       @id = id
       @url = url
       @server_type = type
       @dmc_info = dmc_info
-      @name = ""
+      @name = name
     end
 
     def type
       @server_type
     end
 
-    def access(&block)
-      heart_beat = start_heart_beat
+    def access(bot, &block)
+      heart_beat = start_heart_beat(bot)
       block.call(@url)
       heart_beat.kill
 
@@ -72,7 +72,7 @@ module Niconico
 
     private
 
-    def start_heart_beat
+    def start_heart_beat(bot)
       if self.dmc? then
         thread = Thread.new do
           loop do
@@ -90,7 +90,8 @@ module Niconico
               response = http.request(request)
             end
 
-            puts "beat: " + response.code
+            
+            bot.debug "Sending niconico heartbeat CODE:#{response.code}"
             sleep(30)
           end
         end
@@ -343,7 +344,7 @@ module Niconico
         i.print @dmc_session_response.to_json
       end
 
-      return VideoInfo.new(self.id, @dmc_session_response["data"]["session"]["content_uri"], "dmc", dmc_info: self)
+      return VideoInfo.new(self.id, @dmc_session_response["data"]["session"]["content_uri"], "dmc", @dmc_watch_response["video"]["title"], dmc_info: self)
     end
 
     def id
@@ -357,6 +358,8 @@ bot = Discordrb::Commands::CommandBot.new(
   client_id: ENV["CLIENT_ID"],
   prefix: ENV["PREFIX"])
 
+bot.debug = true
+
 bot.command :up do |event|
   begin
     channel = event.author.voice_channel
@@ -365,72 +368,121 @@ bot.command :up do |event|
   end
   bot.voice_connect(channel)
   event.voice.filter_volume = 0.2
-  event << "Connect #{channel.name}"
+  event.voice.volume = ENV["DEFAULT_VOL"].to_f
+  event << "Connect ##{channel.name}"
 end
 
-bot.command :play do |event, video_id|
+usage_play = "usage: `#{ENV["PREFIX"]}play {Video_URL or VideoID}`\n"
+usage_play += "       ex) `#{ENV["PREFIX"]}play https://www.nicovideo.jp/watch/sm9`"
+usage_play += "       ex) `#{ENV["PREFIX"]}play sm9`"
+bot.command :play, usage: usage_play do |event, video_str|
   begin
     channel = event.author.voice_channel
   rescue RestClient::BadRequest => exception
     event << "#{event.author.name}がボイスチャンネルに参加していないか、Discordサーバに問題があります。"
+    return
   end
+
+  if event.voice == nil then
+    event << "BOTがボイスチャットに参加していません。`#{ENV["PREFIX"]}up`を実行してください。"
+    return
+  end
+
+  if video_str == nil then
+    event << usage_play
+    return
+  end
+
   if event.voice.playing? then
     event << "再生中です。"
+    return
   else
+
     if event.voice.channel == event.author.voice_channel then
-      if md = video_id.match(/sm(\d+)/) then
-        event.respond "now loading..."
-        video = Niconico.receive(md[1].to_s)
-        video.access do |url|
-          event.voice.play_io(open(url))
-          event.respond "completed!"
-        end
+
+      video_id = ""
+      if md = video_str.match(/sm(\d+)/) then
+        video_id = md[1].to_s
+      elsif md = video_str.match(/www\.nicovideo\.jp\/watch\/sm(\d+)/) then
+        video_id = md[1].to_s
       else
         event << "ERROR: 不正な引数です。"
+        return
       end
+
+      video = Niconico.receive(video_id)
+      event.respond "playing \"#{video.name}\""
+      video.access(bot) do |url|
+        event.voice.play_file(url, "-async 1")
+      end
+
     else
       event << "#{event.voice.channel.name} に参加してください。"
+      return
     end
   end
+
+  event << "completed"
 end
 
 bot.command :pause do |event|
+  if event.voice == nil then
+    event << "BOTがボイスチャットに参加していません。`#{ENV["PREFIX"]}up`を実行してください。"
+    return
+  end
+
   begin
     if event.voice.channel == event.author.voice_channel then
       event.voice.pause
     else
       event << "#{event.voice.channel.name} に参加してください。"
+      return
     end
     
   rescue RestClient::BadRequest => exception
     event << "あなたがボイスチャンネルに参加していないか、Discordサーバに問題があります。"
+    return
   rescue NoMethodError => exception
     event << "ボットがボイスチャンネルに接続していません。"
     event << "接続していた場合、 @denebola213#0795 まで"
+    return
   end
   
   event << ""
 end
 
 bot.command :continue do |event|
+  if event.voice == nil then
+    event << "BOTがボイスチャットに参加していません。`#{ENV["PREFIX"]}up`を実行してください。"
+    return
+  end
+
   begin
     if event.voice.channel == event.author.voice_channel then
       event.voice.continue
     else
       event << "#{event.voice.channel.name} に参加してください。"
+      return
     end
     
   rescue RestClient::BadRequest => exception
     event << "あなたがボイスチャンネルに参加していないか、Discordサーバに問題があります。"
+    return
   rescue NoMethodError => exception
     event << "ボットがボイスチャンネルに接続していません。"
     event << "接続していた場合、 @denebola213#0795 まで"
+    return
   end
   
   event << ""
 end
 
 bot.command :stop do |event|
+  if event.voice == nil then
+    event << "BOTがボイスチャットに参加していません。`#{ENV["PREFIX"]}up`を実行してください。"
+    return
+  end
+
   begin
     if event.voice.channel == event.author.voice_channel then
       event.voice.stop_playing
@@ -440,20 +492,34 @@ bot.command :stop do |event|
     
   rescue RestClient::BadRequest => exception
     event << "あなたがボイスチャンネルに参加していないか、Discordサーバに問題があります。"
+    return
   rescue NoMethodError => exception
     event << "ボットがボイスチャンネルに接続していません。"
     event << "接続していた場合、 @denebola213#0795 まで"
+    return
   end
   
   event << ""
 end
 
 bot.command :volume do |event, volume_val|
-  event.voice.volume = volume_val.to_f
-  ""
+  if event.voice == nil then
+    event << "BOTがボイスチャットに参加していません。`#{ENV["PREFIX"]}up`を実行してください。"
+    return
+  end
+
+  if volume_val != nil then
+    event.voice.volume = volume_val.to_f
+  end
+  
+  event << "Volume: #{event.voice.volume}"
 end
 
 bot.command :kill do |event|
+  if event.voice == nil then
+    event << "BOTがボイスチャットに参加していません。`#{ENV["PREFIX"]}up`を実行してください。"
+  end
+
   begin
     if event.voice.channel == event.author.voice_channel then
       event.voice.destroy
@@ -473,6 +539,11 @@ end
 
 bot.command :exit do |event|
   bot.stop
+end
+
+bot.command :ping do |event|
+  m = event.respond('pong.')
+  m.edit "pong. Time taken: #{Time.now - event.timestamp} seconds."
 end
 
 
